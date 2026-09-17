@@ -746,20 +746,18 @@ export default function App() {
               <div className="input-group full">
                 <label>Technical Skills</label>
                 <p className="field-hint">Select the technologies you are familiar with</p>
-                <div className="skill-grid">
+                <div className="skills-grid">
                   {skills.map((skill) => (
                     <button
                       type="button"
                       key={skill.id}
-                      className={`skill-grid ${
+                      className={`skill-card ${
                         selectedSkills.includes(skill.id) ? "selected" : ""
                       }`}
-
-                      
                       onClick={() => toggleSkill(skill.id)}
                     >
-                      <span>{skill.icon}</span>
-                      {skill.name}
+                      <span className="skill-icon">{skill.icon}</span>
+                      <span>{skill.name}</span>
                     </button>
                   ))}
                 </div>
