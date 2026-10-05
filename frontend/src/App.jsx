@@ -1,8 +1,11 @@
 
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import "./App.css";
 
 const API_URL = "http://127.0.0.1:5000/api/technology";
+const PROGRESS_API_URL = "http://127.0.0.1:5000/api/progress";
+const PROGRESS_GET_URL = "http://127.0.0.1:5000/api/progress";
+const TIMELINE_GET_URL = "http://127.0.0.1:5000/api/timeline";
 
 const skills = [
   { id: "Python", icon: "🐍", name: "Python" },
@@ -37,6 +40,26 @@ export default function App() {
     description: "",
     objective: "",
   });
+
+  // Milestone 3 - Progress Tracking
+  // Progress percentage is calculated automatically by the Flask backend.
+  const [progressData, setProgressData] = useState({
+    week: "",
+    currentTask: "",
+    completedTasks: "",
+    pendingTasks: "",
+    problems: "",
+  });
+  const [progressResult, setProgressResult] = useState(null);
+  const [progressLoading, setProgressLoading] = useState(false);
+  const [progressError, setProgressError] = useState("");
+  const [savedProgress, setSavedProgress] = useState([]);
+  const [progressHistoryLoading, setProgressHistoryLoading] = useState(false);
+
+  // M2 Timeline -> M3 Progress Tracking
+  const [timelineData, setTimelineData] = useState(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState("");
 
   const handleTouchStart = (e) => {
     touchStartX.current = e.touches[0].clientX;
@@ -90,6 +113,155 @@ export default function App() {
     }
 
     setCurrentPage("project");
+  };
+
+  const getWeekNumber = (weekValue) => {
+    const match = String(weekValue || "").match(/\d+/);
+    return match ? Number(match[0]) : null;
+  };
+
+  const getWeekPlan = (weekValue) => {
+    const weekNumber = getWeekNumber(weekValue);
+    if (!weekNumber || !timelineData?.weekly_plan) return null;
+
+    return (
+      timelineData.weekly_plan.find(
+        (item) => Number(item.week) === weekNumber
+      ) || null
+    );
+  };
+
+  const loadTimeline = async () => {
+    setTimelineLoading(true);
+    setTimelineError("");
+
+    try {
+      const response = await fetch(TIMELINE_GET_URL);
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success || !data.timeline) {
+        throw new Error(
+          data.message || data.error || "Unable to load project timeline."
+        );
+      }
+
+      setTimelineData(data.timeline);
+
+      if (!progressData.week && data.timeline.weekly_plan?.length) {
+        const firstWeek = data.timeline.weekly_plan[0];
+
+        setProgressData((current) => ({
+          ...current,
+          week: `Week ${firstWeek.week}`,
+          currentTask: firstWeek.tasks?.[0] || "",
+        }));
+      }
+    } catch (error) {
+      console.error("Get Timeline Error:", error);
+      setTimelineError(
+        error.message ||
+          "Unable to connect to the Timeline Agent. Please make sure the Flask backend is running on port 5000."
+      );
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
+  const handleProgressChange = (e) => {
+    const { name, value } = e.target;
+
+    if (name === "week") {
+      const selectedPlan = getWeekPlan(value);
+
+      setProgressData((current) => ({
+        ...current,
+        week: value,
+        currentTask: selectedPlan?.tasks?.[0] || "",
+        completedTasks: "",
+        pendingTasks: "",
+        problems: "",
+      }));
+      return;
+    }
+
+    setProgressData((current) => ({
+      ...current,
+      [name]: value,
+    }));
+  };
+
+  useEffect(() => {
+    if (currentPage === "progress") {
+      loadTimeline();
+      loadSavedProgress();
+    }
+  }, [currentPage]);
+
+  const loadSavedProgress = async () => {
+    setProgressHistoryLoading(true);
+    try {
+      const response = await fetch(PROGRESS_GET_URL);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Unable to load saved progress.");
+      }
+      setSavedProgress(Array.isArray(data.progress) ? data.progress : []);
+    } catch (error) {
+      console.error("Get Progress Error:", error);
+    } finally {
+      setProgressHistoryLoading(false);
+    }
+  };
+
+  const handleProgressSubmit = async (e) => {
+    e.preventDefault();
+
+    if (
+      !progressData.week ||
+      !progressData.currentTask.trim() ||
+      !progressData.completedTasks.trim()
+    ) {
+      alert("Please complete Week, Current Task, and Completed Tasks.");
+      return;
+    }
+
+    setProgressLoading(true);
+    setProgressError("");
+    setProgressResult(null);
+
+    try {
+      const response = await fetch(PROGRESS_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          week: progressData.week,
+          current_task: progressData.currentTask,
+          completed_tasks: progressData.completedTasks,
+          pending_tasks: progressData.pendingTasks,
+          problems: progressData.problems,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Progress Tracking request failed.");
+      }
+
+      setProgressResult(data.progress);
+      await loadSavedProgress();
+      setCurrentPage("progress-report");
+    } catch (error) {
+      console.error("Progress Tracking Error:", error);
+      setProgressError(
+        error.message ||
+          "Unable to connect to Progress Tracking. Please make sure the Flask backend is running on port 5000."
+      );
+    } finally {
+      setProgressLoading(false);
+    }
   };
 
   const handleProjectContinue = () => {
@@ -408,6 +580,321 @@ export default function App() {
           font-weight: 600;
           color: #e6e9f7;
         }
+
+        .progress-report-page {
+          max-height: calc(100vh - 170px);
+          overflow-y: auto;
+        }
+
+        .progress-report-top {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 14px;
+          margin: 20px 0;
+        }
+
+        .progress-report-info {
+          padding: 16px 18px;
+          border: 1px solid rgba(117, 95, 255, 0.25);
+          border-radius: 16px;
+          background: rgba(10, 14, 38, 0.65);
+        }
+
+        .progress-report-info span {
+          display: block;
+          font-size: 10px;
+          letter-spacing: 1.2px;
+          opacity: 0.65;
+          margin-bottom: 7px;
+        }
+
+        .progress-report-info strong {
+          display: block;
+          font-size: 15px;
+          line-height: 1.4;
+        }
+
+        .progress-graphs-grid {
+          display: grid;
+          grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.2fr);
+          gap: 18px;
+        }
+
+        .progress-graph-card {
+          padding: 22px;
+          border: 1px solid rgba(117, 95, 255, 0.22);
+          border-radius: 18px;
+          background: rgba(10, 14, 38, 0.62);
+        }
+
+        .progress-graph-card h3 {
+          margin: 0 0 20px;
+          font-size: 17px;
+        }
+
+        .progress-circle-wrap {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 220px;
+        }
+
+        .progress-circle {
+          width: 180px;
+          height: 180px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 0 35px rgba(138, 59, 255, 0.18);
+        }
+
+        .progress-circle-inner {
+          width: 138px;
+          height: 138px;
+          border-radius: 50%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          background: #080d22;
+          border: 1px solid rgba(255,255,255,0.08);
+        }
+
+        .progress-circle-inner strong {
+          font-size: 30px;
+          line-height: 1;
+        }
+
+        .progress-circle-inner span {
+          margin-top: 7px;
+          font-size: 11px;
+          opacity: 0.65;
+        }
+
+        .task-bar-chart {
+          display: flex;
+          flex-direction: column;
+          gap: 26px;
+          padding-top: 18px;
+        }
+
+        .task-bar-label {
+          display: flex;
+          justify-content: space-between;
+          margin-bottom: 8px;
+          font-size: 13px;
+        }
+
+        .task-bar-label span {
+          opacity: 0.75;
+        }
+
+        .task-bar-track {
+          height: 14px;
+          border-radius: 99px;
+          background: rgba(255,255,255,0.07);
+          overflow: hidden;
+        }
+
+        .task-bar-fill {
+          height: 100%;
+          border-radius: 99px;
+          transition: width 0.5s ease;
+        }
+
+        .task-bar-fill.completed {
+          background: linear-gradient(90deg, #3ad4ff, #8a3bff);
+        }
+
+        .task-bar-fill.pending {
+          background: linear-gradient(90deg, #ff9a5c, #ff4f9a);
+        }
+
+        .progress-chart-summary {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 10px;
+          margin-top: 28px;
+        }
+
+        .progress-chart-summary div {
+          padding: 12px;
+          border-radius: 12px;
+          background: rgba(255,255,255,0.04);
+          text-align: center;
+        }
+
+        .progress-chart-summary span {
+          display: block;
+          font-size: 10px;
+          opacity: 0.6;
+          margin-bottom: 5px;
+        }
+
+        .progress-chart-summary strong {
+          font-size: 17px;
+        }
+
+        .progress-report-problems {
+          margin-top: 18px;
+          padding: 16px 18px;
+          border-radius: 14px;
+          border: 1px solid rgba(117, 95, 255, 0.18);
+          background: rgba(10, 14, 38, 0.5);
+        }
+
+        .progress-report-problems p {
+          margin: 7px 0 0;
+          opacity: 0.75;
+        }
+
+        .progress-page-card {
+          max-height: calc(100vh - 170px);
+          overflow-y: auto;
+        }
+
+        .progress-page-card .progress-summary-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 14px;
+          margin: 18px 0;
+        }
+
+        .progress-page-card .progress-stat-box {
+          padding: 16px 18px;
+          border: 1px solid rgba(117, 95, 255, 0.25);
+          border-radius: 16px;
+          background: rgba(10, 14, 38, 0.65);
+        }
+
+        .progress-page-card .progress-stat-box span {
+          display: block;
+          font-size: 11px;
+          letter-spacing: 1.2px;
+          opacity: 0.65;
+          margin-bottom: 6px;
+        }
+
+        .progress-page-card .progress-stat-box strong {
+          display: block;
+          font-size: 16px;
+          line-height: 1.35;
+        }
+
+        .progress-page-card .progress-form-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 16px;
+        }
+
+        .progress-page-card .progress-full {
+          grid-column: 1 / -1;
+        }
+
+        .progress-page-card .progress-actions {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          margin-top: 18px;
+        }
+
+        .progress-page-card .progress-result-box {
+          margin-top: 20px;
+          padding: 20px;
+          border-radius: 18px;
+          border: 1px solid rgba(75, 220, 255, 0.28);
+          background: rgba(7, 18, 35, 0.7);
+        }
+
+        .progress-page-card .backend-progress-track {
+          height: 12px;
+          border-radius: 99px;
+          background: rgba(255, 255, 255, 0.08);
+          overflow: hidden;
+          margin: 16px 0 8px;
+        }
+
+        .progress-page-card .backend-progress-fill {
+          height: 100%;
+          border-radius: 99px;
+          background: linear-gradient(90deg, #3ad4ff, #8a3bff);
+          transition: width 0.4s ease;
+        }
+
+        .progress-page-card .progress-percent {
+          text-align: right;
+          font-weight: 800;
+          font-size: 20px;
+        }
+
+        .progress-page-card .progress-result-grid {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 12px;
+          margin-top: 14px;
+        }
+
+        .progress-page-card .result-mini {
+          padding: 12px;
+          border-radius: 12px;
+          background: rgba(255, 255, 255, 0.04);
+        }
+
+        .progress-page-card .result-mini span {
+          display: block;
+          font-size: 10px;
+          opacity: 0.6;
+          text-transform: uppercase;
+          margin-bottom: 5px;
+        }
+
+        .progress-page-card .result-mini strong {
+          font-size: 15px;
+        }
+
+        .progress-page-card .progress-error {
+          margin-top: 16px;
+          padding: 14px 16px;
+          border-radius: 12px;
+          border: 1px solid rgba(255, 80, 120, 0.35);
+          background: rgba(100, 20, 45, 0.22);
+        }
+
+        @media (max-width: 900px) {
+          .progress-report-top,
+          .progress-graphs-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        @media (max-width: 900px) {
+          .progress-page-card .progress-summary-grid,
+          .progress-page-card .progress-result-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
+          .progress-page-card .progress-form-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .progress-page-card .progress-full {
+            grid-column: auto;
+          }
+        }
+
+        @media (max-width: 600px) {
+          .progress-page-card .progress-summary-grid,
+          .progress-page-card .progress-result-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .progress-page-card .progress-actions {
+            flex-direction: column;
+            align-items: stretch;
+          }
+        }
       `}</style>
 
     <div
@@ -504,6 +991,18 @@ export default function App() {
         >
           <span className="nav-icon">☑</span>
           Review & Complete
+        </button>
+
+        <button
+          className={`nav-item ${currentPage === "progress" ? "active" : ""}`}
+          onClick={() => {
+            setCurrentPage("progress");
+            loadSavedProgress();
+            setSidebarOpen(false);
+          }}
+        >
+          <span className="nav-icon">◔</span>
+          Progress Tracking
         </button>
 
         <div className="sidebar-bottom">
@@ -637,6 +1136,8 @@ export default function App() {
             <h1>
               {currentPage === "dashboard"
                 ? "Student Dashboard"
+                : currentPage === "progress"
+                ? "Progress Tracking"
                 : "Academic Project Onboarding"}
             </h1>
 
@@ -948,6 +1449,348 @@ export default function App() {
         )}
 
         {/* --------------------------------------------------
+            PROGRESS TRACKING - MILESTONE 3
+            Percentage is calculated automatically by backend.
+        -------------------------------------------------- */}
+        {currentPage === "progress" && (
+          <section className="glass-card progress-page-card">
+            <div className="card-heading">
+              <div className="section-icon">◔</div>
+              <div>
+                <div className="section-number">MILESTONE 03</div>
+                <h2>Project Progress Tracking</h2>
+                <p>
+                  Submit your weekly work. Your progress percentage is calculated
+                  automatically from completed and pending tasks.
+                </p>
+              </div>
+            </div>
+
+            <div className="progress-summary-grid">
+              <div className="progress-stat-box">
+                <span>PROJECT</span>
+                <strong>{projectData.title || "Not submitted"}</strong>
+              </div>
+              <div className="progress-stat-box">
+                <span>WEEK</span>
+                <strong>{progressResult?.week || progressData.week || "Not updated"}</strong>
+              </div>
+              <div className="progress-stat-box">
+                <span>STATUS</span>
+                <strong>{progressResult?.status || "Waiting for update"}</strong>
+              </div>
+            </div>
+
+            {timelineLoading && (
+              <div
+                className="progress-result-box"
+                style={{ marginBottom: "18px" }}
+              >
+                Loading your M2 week-wise project plan...
+              </div>
+            )}
+
+            {timelineError && (
+              <div
+                className="progress-error"
+                style={{ marginBottom: "18px" }}
+              >
+                ⚠️ {timelineError}
+              </div>
+            )}
+
+            {getWeekPlan(progressData.week) && (
+              <div
+                className="progress-result-box"
+                style={{ marginBottom: "18px" }}
+              >
+                <h3>✓ Week Plan</h3>
+                <p>
+                  <strong>{getWeekPlan(progressData.week).milestone}</strong>
+                </p>
+                <p style={{ marginBottom: "8px" }}>
+                  Tasks planned for {progressData.week}:
+                </p>
+                <ul style={{ marginTop: 0, paddingLeft: "20px" }}>
+                  {getWeekPlan(progressData.week).tasks?.map((task, index) => (
+                    <li key={index} style={{ marginBottom: "6px" }}>
+                      {task}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <form className="progress-form-grid" onSubmit={handleProgressSubmit}>
+              <div className="input-group">
+                <label>Week *</label>
+                <div className="input-wrap">
+                  <select
+                    name="week"
+                    value={progressData.week}
+                    onChange={handleProgressChange}
+                  >
+                    <option value="">Select week</option>
+                    {timelineData?.weekly_plan?.map((weekPlan) => (
+                      <option
+                        key={weekPlan.week}
+                        value={`Week ${weekPlan.week}`}
+                      >
+                        Week {weekPlan.week}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label>Current Task *</label>
+                <div className="input-wrap">
+                  <select
+                    name="currentTask"
+                    value={progressData.currentTask}
+                    onChange={handleProgressChange}
+                    disabled={!getWeekPlan(progressData.week)?.tasks?.length}
+                  >
+                    <option value="">Select current task</option>
+                    {(getWeekPlan(progressData.week)?.tasks || []).map(
+                      (task, index) => (
+                        <option key={index} value={task}>
+                          {task}
+                        </option>
+                      )
+                    )}
+                  </select>
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label>Completed Tasks *</label>
+                <div className="input-wrap">
+                  <textarea
+                    name="completedTasks"
+                    value={progressData.completedTasks}
+                    onChange={handleProgressChange}
+                    placeholder="Enter completed tasks. Separate multiple tasks with commas or new lines."
+                    rows="3"
+                  />
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label>Pending Tasks</label>
+                <div className="input-wrap">
+                  <textarea
+                    name="pendingTasks"
+                    value={progressData.pendingTasks}
+                    onChange={handleProgressChange}
+                    placeholder="Enter pending tasks."
+                    rows="3"
+                  />
+                </div>
+              </div>
+
+              <div className="input-group progress-full">
+                <label>Problems Faced</label>
+                <div className="input-wrap">
+                  <textarea
+                    name="problems"
+                    value={progressData.problems}
+                    onChange={handleProgressChange}
+                    placeholder="Mention blockers or problems you faced."
+                    rows="3"
+                  />
+                </div>
+              </div>
+
+              <div className="progress-actions progress-full">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage("dashboard")}
+                >
+                  ← Back to Dashboard
+                </button>
+
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={progressLoading}
+                >
+                  {progressLoading
+                    ? "Calculating Progress..."
+                    : "Submit Weekly Progress"}
+                  <span className="button-arrow">→</span>
+                </button>
+              </div>
+            </form>
+
+            {progressError && (
+              <div className="progress-error">
+                ⚠️ {progressError}
+              </div>
+            )}
+
+            {progressResult && (
+              <div className="progress-result-box">
+                <h3>✓ Automatic Progress Result</h3>
+                <p>
+                  <strong>{progressResult.week}</strong> —{" "}
+                  {progressResult.current_task}
+                </p>
+
+                <div className="backend-progress-track">
+                  <div
+                    className="backend-progress-fill"
+                    style={{
+                      width: `${progressResult.progress_percentage}%`,
+                    }}
+                  ></div>
+                </div>
+
+                <div className="progress-percent">
+                  {progressResult.progress_percentage}%
+                </div>
+
+                <div className="progress-result-grid">
+                  <div className="result-mini">
+                    <span>Status</span>
+                    <strong>{progressResult.status}</strong>
+                  </div>
+                  <div className="result-mini">
+                    <span>Completed</span>
+                    <strong>{progressResult.completed_count}</strong>
+                  </div>
+                  <div className="result-mini">
+                    <span>Pending</span>
+                    <strong>{progressResult.pending_count}</strong>
+                  </div>
+                  <div className="result-mini">
+                    <span>Total Tasks</span>
+                    <strong>{progressResult.total_tasks}</strong>
+                  </div>
+                </div>
+
+                <p style={{ marginTop: "14px" }}>
+                  <strong>Problems:</strong>{" "}
+                  {progressResult.problems || "No problems reported"}
+                </p>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* --------------------------------------------------
+            PROGRESS REPORT - MILESTONE 3
+            Opens automatically after Submit Weekly Progress.
+        -------------------------------------------------- */}
+        {currentPage === "progress-report" && progressResult && (
+          <section className="glass-card progress-report-page">
+            <div className="card-heading">
+              <div className="section-icon">◔</div>
+              <div>
+                <div className="section-number">MILESTONE 03</div>
+                <h2>Weekly Progress Report</h2>
+                <p>Your weekly progress has been calculated automatically.</p>
+              </div>
+            </div>
+
+            <div className="progress-report-top">
+              <div className="progress-report-info">
+                <span>WEEK</span>
+                <strong>{progressResult.week}</strong>
+              </div>
+              <div className="progress-report-info">
+                <span>CURRENT TASK</span>
+                <strong>{progressResult.current_task}</strong>
+              </div>
+              <div className="progress-report-info">
+                <span>STATUS</span>
+                <strong>{progressResult.status}</strong>
+              </div>
+            </div>
+
+            <div className="progress-graphs-grid">
+              <div className="progress-graph-card">
+                <h3>Overall Progress</h3>
+                <div className="progress-circle-wrap">
+                  <div
+                    className="progress-circle"
+                    style={{
+                      background: `conic-gradient(#8a3bff ${progressResult.progress_percentage}%, rgba(255,255,255,0.08) 0)`,
+                    }}
+                  >
+                    <div className="progress-circle-inner">
+                      <strong>{progressResult.progress_percentage}%</strong>
+                      <span>Completed</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="progress-graph-card">
+                <h3>Task Progress</h3>
+                <div className="task-bar-chart">
+                  <div className="task-bar-row">
+                    <div className="task-bar-label">
+                      <span>Completed</span>
+                      <strong>{progressResult.completed_count}</strong>
+                    </div>
+                    <div className="task-bar-track">
+                      <div
+                        className="task-bar-fill completed"
+                        style={{
+                          width: `${progressResult.total_tasks > 0 ? (progressResult.completed_count / progressResult.total_tasks) * 100 : 0}%`,
+                        }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  <div className="task-bar-row">
+                    <div className="task-bar-label">
+                      <span>Pending</span>
+                      <strong>{progressResult.pending_count}</strong>
+                    </div>
+                    <div className="task-bar-track">
+                      <div
+                        className="task-bar-fill pending"
+                        style={{
+                          width: `${progressResult.total_tasks > 0 ? (progressResult.pending_count / progressResult.total_tasks) * 100 : 0}%`,
+                        }}
+                      ></div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="progress-chart-summary">
+                  <div><span>Total Tasks</span><strong>{progressResult.total_tasks}</strong></div>
+                  <div><span>Completed</span><strong>{progressResult.completed_count}</strong></div>
+                  <div><span>Pending</span><strong>{progressResult.pending_count}</strong></div>
+                </div>
+              </div>
+            </div>
+
+            <div className="progress-report-problems">
+              <strong>Problems Faced</strong>
+              <p>{progressResult.problems || "No problems reported"}</p>
+            </div>
+
+            <div className="form-footer">
+              <button type="button" onClick={() => setCurrentPage("progress")}>
+                ← Back to Progress Tracking
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => setCurrentPage("dashboard")}
+              >
+                Go to Dashboard
+                <span className="button-arrow">→</span>
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* --------------------------------------------------
             TECHNOLOGY RECOMMENDATION
         -------------------------------------------------- */}
         {currentPage === "technology" && (
@@ -1042,6 +1885,32 @@ export default function App() {
                 <h2>Welcome, {formData.name || "Student"} 👋</h2>
                 <p>Your project onboarding has been completed successfully.</p>
               </div>
+            </div>
+
+            <div className="progress-result-box" style={{ marginBottom: "20px" }}>
+              <h3>Latest Progress</h3>
+              {progressHistoryLoading ? (
+                <p>Loading saved progress...</p>
+              ) : savedProgress.length > 0 ? (
+                (() => {
+                  const latest = savedProgress[savedProgress.length - 1];
+                  return (
+                    <>
+                      <p><strong>{latest.week}</strong> — {latest.current_task}</p>
+                      <div className="backend-progress-track">
+                        <div className="backend-progress-fill" style={{ width: `${latest.progress_percentage || 0}%` }}></div>
+                      </div>
+                      <div className="progress-percent">{latest.progress_percentage || 0}%</div>
+                      <p><strong>Status:</strong> {latest.status}</p>
+                    </>
+                  );
+                })()
+              ) : (
+                <p>No weekly progress submitted yet.</p>
+              )}
+              <button type="button" className="primary-button" onClick={() => { loadSavedProgress(); setCurrentPage("progress"); }}>
+                Update Weekly Progress →
+              </button>
             </div>
 
             <div className="form-grid">
@@ -1140,11 +2009,10 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={() =>
-                    alert(
-                      "AI Mentor: Track your project by marking each milestone as Not Started, In Progress, or Completed."
-                    )
-                  }
+                  onClick={() => {
+                    setAiOpen(false);
+                    setCurrentPage("progress");
+                  }}
                 >
                   🎯 Track Project Progress
                 </button>
