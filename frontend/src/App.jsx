@@ -15,6 +15,8 @@ export default function App() {
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiResult, setAiResult] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
   const touchStartX = useRef(0);
   const touchCurrentX = useRef(0);
 
@@ -86,7 +88,7 @@ export default function App() {
     setCurrentPage("project");
   };
 
-  const handleProjectContinue = () => {
+  const handleProjectContinue = async () => {
     if (
       !projectData.title ||
       !projectData.category ||
@@ -96,7 +98,42 @@ export default function App() {
       return;
     }
 
-    setCurrentPage("review");
+    setAiLoading(true);
+    setAiResult("");
+
+    try {
+      const response = await fetch(
+        "http://127.0.0.1:5000/api/project/analyze",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            project_idea: `
+  Project Title: ${projectData.title}
+  Category: ${projectData.category}
+  Description: ${projectData.description}
+  Objective: ${projectData.objective}
+            `,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (data.success) {
+        setAiResult(data.result);
+        setCurrentPage("review");
+      } else {
+        alert("AI analysis failed: " + data.error);
+      }
+    } catch (error) {
+      alert("Could not connect to the backend.");
+      console.error(error);
+    } finally {
+      setAiLoading(false);
+    }
   };
 
   const handleCompleteOnboarding = () => {
@@ -623,8 +660,9 @@ export default function App() {
                 type="button"
                 className="primary-button"
                 onClick={handleProjectContinue}
+                disabled={aiLoading}
               >
-                Continue to Review
+                {aiLoading ? "Generating Blueprint..." : "Continue to Review"}
                 <span className="button-arrow">→</span>
               </button>
             </div>
@@ -671,7 +709,12 @@ export default function App() {
                 {selectedSkills.join(", ")}
               </p>
             </div>
-
+            {aiResult && (
+              <div className="ai-result-box">
+                <h3>🤖 AI Project Blueprint</h3>
+                <pre>{aiResult}</pre>
+              </div>
+            )}
             <div className="form-footer">
               <button
                 type="button"

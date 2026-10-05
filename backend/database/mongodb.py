@@ -16,6 +16,9 @@ db = client["ai_project_mentor"]
 students_collection = db["students"]
 projects_collection = db["projects"]
 
+progress_collection = db["progress"]
+timeline_collection = db["timelines"]
+
 
 def test_connection():
     try:
