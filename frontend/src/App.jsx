@@ -1,5 +1,11 @@
-import { useState, useRef } from "react";
+
+import { useEffect, useState, useRef } from "react";
 import "./App.css";
+
+const API_URL = "http://127.0.0.1:5000/api/technology";
+const PROGRESS_API_URL = "http://127.0.0.1:5000/api/progress";
+const PROGRESS_GET_URL = "http://127.0.0.1:5000/api/progress";
+const TIMELINE_GET_URL = "http://127.0.0.1:5000/api/timeline";
 
 const skills = [
   { id: "Python", icon: "🐍", name: "Python" },
@@ -19,6 +25,40 @@ export default function App() {
   const [aiLoading, setAiLoading] = useState(false);
   const touchStartX = useRef(0);
   const touchCurrentX = useRef(0);
+
+  const [formData, setFormData] = useState({
+    name: "",
+    department: "",
+    year: "",
+    interests: "",
+  });
+
+  const [projectData, setProjectData] = useState({
+    title: "",
+    category: "",
+    description: "",
+    objective: "",
+  });
+
+  // Milestone 3 - Progress Tracking
+  // Progress percentage is calculated automatically by the Flask backend.
+  const [progressData, setProgressData] = useState({
+    week: "",
+    currentTask: "",
+    completedTasks: "",
+    pendingTasks: "",
+    problems: "",
+  });
+  const [progressResult, setProgressResult] = useState(null);
+  const [progressLoading, setProgressLoading] = useState(false);
+  const [progressError, setProgressError] = useState("");
+  const [savedProgress, setSavedProgress] = useState([]);
+  const [progressHistoryLoading, setProgressHistoryLoading] = useState(false);
+
+  // M2 Timeline -> M3 Progress Tracking
+  const [timelineData, setTimelineData] = useState(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState("");
 
   const handleTouchStart = (e) => {
     touchStartX.current = e.touches[0].clientX;
@@ -42,20 +82,6 @@ export default function App() {
     touchStartX.current = 0;
     touchCurrentX.current = 0;
   };
-
-  const [formData, setFormData] = useState({
-    name: "",
-    department: "",
-    year: "",
-    interests: "",
-  });
-
-  const [projectData, setProjectData] = useState({
-    title: "",
-    category: "",
-    description: "",
-    objective: "",
-  });
 
   const toggleSkill = (skill) => {
     setSelectedSkills((current) =>
@@ -136,12 +162,625 @@ export default function App() {
     }
   };
 
+  // Technology Agent runs only after View Recommendation is clicked.
+  const handleViewRecommendation = async () => {
+    setTechnologyLoading(true);
+    setTechnologyError("");
+    setTechnologyResult(null);
+    setCurrentPage("technology");
+
+    const feasibilityAnalysis =
+      "The project is technically feasible based on the submitted project idea, available skills, and proposed academic scope.";
+
+    const projectScope =
+      projectData.objective ||
+      `Develop ${projectData.title} with the required features described by the student.`;
+
+    try {
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          project_idea: `${projectData.title}. ${projectData.description}`,
+          feasibility_analysis: feasibilityAnalysis,
+          project_scope: projectScope,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.error || "Technology recommendation request failed."
+        );
+      }
+
+      setTechnologyResult(data.technology_recommendation);
+    } catch (error) {
+      console.error("Technology Agent Error:", error);
+      setTechnologyError(
+        "Unable to connect to the Technology Agent. Please make sure the Flask backend is running on port 5000."
+      );
+    } finally {
+      setTechnologyLoading(false);
+    }
+  };
+
   const handleCompleteOnboarding = () => {
     alert("Congratulations! Your project onboarding is complete!");
     setCurrentPage("dashboard");
   };
 
+  // Displays any object returned by the backend without assuming one exact
+  // response structure. This makes the frontend compatible with the current
+  // Technology Agent response and future response improvements.
+  const renderRecommendation = (value, level = 0) => {
+    if (value === null || value === undefined || value === "") return null;
+
+    if (typeof value === "object" && !Array.isArray(value)) {
+      return (
+        <div className={level === 0 ? "recommendation-object" : "recommendation-nested"}>
+          {Object.entries(value).map(([key, item]) => (
+            <div className="recommendation-item" key={key}>
+              <h4>{formatKey(key)}</h4>
+              {renderRecommendation(item, level + 1)}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (Array.isArray(value)) {
+      return (
+        <ul className="recommendation-list">
+          {value.map((item, index) => (
+            <li key={index}>{renderRecommendation(item, level + 1)}</li>
+          ))}
+        </ul>
+      );
+    }
+
+    return <p className="recommendation-value">{String(value)}</p>;
+  };
+
+  const formatKey = (key) =>
+    String(key)
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+  // Parses the Technology Agent's numbered plain-text stack
+  // ("1. PROGRAMMING LANGUAGE\n\nTechnology: Python\n\nReason: ...")
+  // into structured cards. Falls back to null if the text doesn't
+  // match that shape, so the generic renderer can still handle it.
+  const parseTechStackText = (text) => {
+    if (typeof text !== "string") return null;
+
+    const cleaned = text.replace(/\\n/g, "\n").trim();
+    const blocks = cleaned
+      .split(/\n?\s*\d+\.\s+/)
+      .map((b) => b.trim())
+      .filter(Boolean);
+
+    if (blocks.length < 2) return null;
+
+    const cards = blocks
+      .map((block) => {
+        const techMatch = block.match(/Technology:\s*([\s\S]*?)(?:\n\s*Reason:|$)/i);
+        const reasonMatch = block.match(/Reason:\s*([\s\S]*)/i);
+        if (!techMatch) return null;
+
+        const labelLine = block.split(/\n/)[0].split("Technology:")[0].trim();
+
+        return {
+          label: labelLine || "Recommendation",
+          tech: techMatch[1].trim().replace(/\n+/g, " "),
+          reason: reasonMatch ? reasonMatch[1].trim().replace(/\n+/g, " ") : "",
+        };
+      })
+      .filter(Boolean);
+
+    return cards.length ? cards : null;
+  };
+
+  const renderTechStackCards = (text) => {
+    const cards = parseTechStackText(text);
+    if (!cards) return renderRecommendation(text);
+
+    return (
+      <div className="tech-stack-grid">
+        {cards.map((card, i) => {
+          const isSkipped = /not required/i.test(card.tech);
+          return (
+            <div
+              className={`tech-stack-card${isSkipped ? " tech-stack-card--skip" : ""}`}
+              key={i}
+            >
+              <span className="tech-stack-index">{i + 1}</span>
+              <div className="tech-stack-body">
+                <p className="tech-stack-label">{card.label}</p>
+                <h4 className="tech-stack-name">{card.tech}</h4>
+                {card.reason && (
+                  <p className="tech-stack-reason">{card.reason}</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
+    <>
+      <style>{`
+        .tech-stack-grid {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          margin-top: 8px;
+        }
+
+        .tech-stack-card {
+          display: grid;
+          grid-template-columns: 34px 1fr;
+          gap: 16px;
+          background: rgba(15, 23, 55, 0.55);
+          border: 1px solid rgba(120, 140, 255, 0.15);
+          border-radius: 14px;
+          padding: 18px 20px;
+        }
+
+        .tech-stack-card--skip {
+          opacity: 0.65;
+        }
+
+        .tech-stack-index {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 700;
+          font-size: 13px;
+          background: linear-gradient(135deg, #3ad4ff, #8a3bff);
+          color: #fff;
+        }
+
+        .tech-stack-card--skip .tech-stack-index {
+          background: rgba(255, 255, 255, 0.08);
+          color: #8b93b8;
+        }
+
+        .tech-stack-label {
+          font-size: 12px;
+          letter-spacing: 0.02em;
+          color: #8b93b8;
+          margin: 0 0 4px;
+        }
+
+        .tech-stack-name {
+          margin: 0 0 6px;
+          font-size: 17px;
+          font-weight: 700;
+          color: #7ce0c6;
+        }
+
+        .tech-stack-card--skip .tech-stack-name {
+          color: #8b93b8;
+        }
+
+        .tech-stack-reason {
+          margin: 0;
+          font-size: 14px;
+          line-height: 1.55;
+          color: #c7cdec;
+        }
+
+        .main-content .profile-card-large {
+          padding: 32px;
+        }
+
+        .onboarding-steps {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 24px 32px;
+          margin-bottom: 24px;
+          border-radius: 16px;
+          background: rgba(15, 23, 55, 0.55);
+          border: 1px solid rgba(120, 140, 255, 0.15);
+        }
+
+        .onboarding-step {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 6px;
+          min-width: 90px;
+        }
+
+        .onboarding-step-icon {
+          width: 44px;
+          height: 44px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 12px;
+          font-weight: 700;
+          font-size: 16px;
+          background: rgba(255, 255, 255, 0.06);
+          color: #8b93b8;
+          border: 1px solid rgba(120, 140, 255, 0.2);
+        }
+
+        .onboarding-step.active .onboarding-step-icon,
+        .onboarding-step.done .onboarding-step-icon {
+          background: linear-gradient(135deg, #3ad4ff, #8a3bff);
+          color: #fff;
+          border-color: transparent;
+        }
+
+        .onboarding-step-title {
+          font-weight: 700;
+          font-size: 14px;
+          color: #8b93b8;
+        }
+
+        .onboarding-step.active .onboarding-step-title,
+        .onboarding-step.done .onboarding-step-title {
+          color: #fff;
+        }
+
+        .onboarding-step-subtitle {
+          font-size: 12px;
+          color: #6c7599;
+        }
+
+        .onboarding-step-line {
+          flex: 1;
+          height: 2px;
+          background: rgba(120, 140, 255, 0.2);
+          border-radius: 2px;
+          margin: 0 4px;
+          align-self: flex-start;
+          margin-top: 22px;
+        }
+
+        .onboarding-step-line.filled {
+          background: linear-gradient(90deg, #3ad4ff, #8a3bff);
+        }
+
+        .selected-technologies-display {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .selected-technologies-display .tech-tags {
+          font-weight: 600;
+          color: #e6e9f7;
+        }
+
+        .progress-report-page {
+          max-height: calc(100vh - 170px);
+          overflow-y: auto;
+        }
+
+        .progress-report-top {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 14px;
+          margin: 20px 0;
+        }
+
+        .progress-report-info {
+          padding: 16px 18px;
+          border: 1px solid rgba(117, 95, 255, 0.25);
+          border-radius: 16px;
+          background: rgba(10, 14, 38, 0.65);
+        }
+
+        .progress-report-info span {
+          display: block;
+          font-size: 10px;
+          letter-spacing: 1.2px;
+          opacity: 0.65;
+          margin-bottom: 7px;
+        }
+
+        .progress-report-info strong {
+          display: block;
+          font-size: 15px;
+          line-height: 1.4;
+        }
+
+        .progress-graphs-grid {
+          display: grid;
+          grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.2fr);
+          gap: 18px;
+        }
+
+        .progress-graph-card {
+          padding: 22px;
+          border: 1px solid rgba(117, 95, 255, 0.22);
+          border-radius: 18px;
+          background: rgba(10, 14, 38, 0.62);
+        }
+
+        .progress-graph-card h3 {
+          margin: 0 0 20px;
+          font-size: 17px;
+        }
+
+        .progress-circle-wrap {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 220px;
+        }
+
+        .progress-circle {
+          width: 180px;
+          height: 180px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 0 35px rgba(138, 59, 255, 0.18);
+        }
+
+        .progress-circle-inner {
+          width: 138px;
+          height: 138px;
+          border-radius: 50%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          background: #080d22;
+          border: 1px solid rgba(255,255,255,0.08);
+        }
+
+        .progress-circle-inner strong {
+          font-size: 30px;
+          line-height: 1;
+        }
+
+        .progress-circle-inner span {
+          margin-top: 7px;
+          font-size: 11px;
+          opacity: 0.65;
+        }
+
+        .task-bar-chart {
+          display: flex;
+          flex-direction: column;
+          gap: 26px;
+          padding-top: 18px;
+        }
+
+        .task-bar-label {
+          display: flex;
+          justify-content: space-between;
+          margin-bottom: 8px;
+          font-size: 13px;
+        }
+
+        .task-bar-label span {
+          opacity: 0.75;
+        }
+
+        .task-bar-track {
+          height: 14px;
+          border-radius: 99px;
+          background: rgba(255,255,255,0.07);
+          overflow: hidden;
+        }
+
+        .task-bar-fill {
+          height: 100%;
+          border-radius: 99px;
+          transition: width 0.5s ease;
+        }
+
+        .task-bar-fill.completed {
+          background: linear-gradient(90deg, #3ad4ff, #8a3bff);
+        }
+
+        .task-bar-fill.pending {
+          background: linear-gradient(90deg, #ff9a5c, #ff4f9a);
+        }
+
+        .progress-chart-summary {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 10px;
+          margin-top: 28px;
+        }
+
+        .progress-chart-summary div {
+          padding: 12px;
+          border-radius: 12px;
+          background: rgba(255,255,255,0.04);
+          text-align: center;
+        }
+
+        .progress-chart-summary span {
+          display: block;
+          font-size: 10px;
+          opacity: 0.6;
+          margin-bottom: 5px;
+        }
+
+        .progress-chart-summary strong {
+          font-size: 17px;
+        }
+
+        .progress-report-problems {
+          margin-top: 18px;
+          padding: 16px 18px;
+          border-radius: 14px;
+          border: 1px solid rgba(117, 95, 255, 0.18);
+          background: rgba(10, 14, 38, 0.5);
+        }
+
+        .progress-report-problems p {
+          margin: 7px 0 0;
+          opacity: 0.75;
+        }
+
+        .progress-page-card {
+          max-height: calc(100vh - 170px);
+          overflow-y: auto;
+        }
+
+        .progress-page-card .progress-summary-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 14px;
+          margin: 18px 0;
+        }
+
+        .progress-page-card .progress-stat-box {
+          padding: 16px 18px;
+          border: 1px solid rgba(117, 95, 255, 0.25);
+          border-radius: 16px;
+          background: rgba(10, 14, 38, 0.65);
+        }
+
+        .progress-page-card .progress-stat-box span {
+          display: block;
+          font-size: 11px;
+          letter-spacing: 1.2px;
+          opacity: 0.65;
+          margin-bottom: 6px;
+        }
+
+        .progress-page-card .progress-stat-box strong {
+          display: block;
+          font-size: 16px;
+          line-height: 1.35;
+        }
+
+        .progress-page-card .progress-form-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 16px;
+        }
+
+        .progress-page-card .progress-full {
+          grid-column: 1 / -1;
+        }
+
+        .progress-page-card .progress-actions {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          margin-top: 18px;
+        }
+
+        .progress-page-card .progress-result-box {
+          margin-top: 20px;
+          padding: 20px;
+          border-radius: 18px;
+          border: 1px solid rgba(75, 220, 255, 0.28);
+          background: rgba(7, 18, 35, 0.7);
+        }
+
+        .progress-page-card .backend-progress-track {
+          height: 12px;
+          border-radius: 99px;
+          background: rgba(255, 255, 255, 0.08);
+          overflow: hidden;
+          margin: 16px 0 8px;
+        }
+
+        .progress-page-card .backend-progress-fill {
+          height: 100%;
+          border-radius: 99px;
+          background: linear-gradient(90deg, #3ad4ff, #8a3bff);
+          transition: width 0.4s ease;
+        }
+
+        .progress-page-card .progress-percent {
+          text-align: right;
+          font-weight: 800;
+          font-size: 20px;
+        }
+
+        .progress-page-card .progress-result-grid {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 12px;
+          margin-top: 14px;
+        }
+
+        .progress-page-card .result-mini {
+          padding: 12px;
+          border-radius: 12px;
+          background: rgba(255, 255, 255, 0.04);
+        }
+
+        .progress-page-card .result-mini span {
+          display: block;
+          font-size: 10px;
+          opacity: 0.6;
+          text-transform: uppercase;
+          margin-bottom: 5px;
+        }
+
+        .progress-page-card .result-mini strong {
+          font-size: 15px;
+        }
+
+        .progress-page-card .progress-error {
+          margin-top: 16px;
+          padding: 14px 16px;
+          border-radius: 12px;
+          border: 1px solid rgba(255, 80, 120, 0.35);
+          background: rgba(100, 20, 45, 0.22);
+        }
+
+        @media (max-width: 900px) {
+          .progress-report-top,
+          .progress-graphs-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        @media (max-width: 900px) {
+          .progress-page-card .progress-summary-grid,
+          .progress-page-card .progress-result-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
+          .progress-page-card .progress-form-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .progress-page-card .progress-full {
+            grid-column: auto;
+          }
+        }
+
+        @media (max-width: 600px) {
+          .progress-page-card .progress-summary-grid,
+          .progress-page-card .progress-result-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .progress-page-card .progress-actions {
+            flex-direction: column;
+            align-items: stretch;
+          }
+        }
+      `}</style>
+
     <div
       className="app-shell"
       onTouchStart={handleTouchStart}
@@ -177,6 +816,7 @@ export default function App() {
         >
           ✕
         </button>
+
         <div className="brand">
           <div className="brand-icon">
             <span>AI</span>
@@ -189,7 +829,6 @@ export default function App() {
         </div>
 
         <div className="sidebar-line"></div>
-
         <div className="nav-heading">OVERVIEW</div>
 
         <button
@@ -238,40 +877,116 @@ export default function App() {
           Review & Complete
         </button>
 
+        <button
+          className={`nav-item ${currentPage === "progress" ? "active" : ""}`}
+          onClick={() => {
+            setCurrentPage("progress");
+            loadSavedProgress();
+            setSidebarOpen(false);
+          }}
+        >
+          <span className="nav-icon">◔</span>
+          Progress Tracking
+        </button>
+
         <div className="sidebar-bottom">
           <div className="help-card">
             <p className="help-title">NEED HELP?</p>
 
             <div className="help-content">
               <div className="mentor-bot">
-              <svg viewBox="0 0 100 100" className="mentor-bot-svg">
-                <defs>
-                  <linearGradient id="botHead" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#3ad4ff" />
-                    <stop offset="100%" stopColor="#8a3bff" />
-                  </linearGradient>
-                </defs>
+                <svg viewBox="0 0 100 100" className="mentor-bot-svg">
+                  <defs>
+                    <linearGradient
+                      id="botHead"
+                      x1="0%"
+                      y1="0%"
+                      x2="100%"
+                      y2="100%"
+                    >
+                      <stop offset="0%" stopColor="#3ad4ff" />
+                      <stop offset="100%" stopColor="#8a3bff" />
+                    </linearGradient>
+                  </defs>
 
-                <line x1="50" y1="8" x2="50" y2="18" stroke="url(#botHead)" strokeWidth="3" strokeLinecap="round" />
-                <circle cx="50" cy="6" r="4" fill="#3ad4ff" />
-
-                <rect x="20" y="18" width="60" height="46" rx="16" fill="#0a1330" stroke="url(#botHead)" strokeWidth="3" />
-
-                <rect x="30" y="30" width="16" height="18" rx="8" fill="#0a1330" stroke="#4ce0ff" strokeWidth="2.5" />
-                <circle cx="38" cy="39" r="3.5" fill="#4ce0ff" />
-
-                <rect x="54" y="30" width="16" height="18" rx="8" fill="#0a1330" stroke="#4ce0ff" strokeWidth="2.5" />
-                <circle cx="62" cy="39" r="3.5" fill="#4ce0ff" />
-
-                <path d="M38 54 Q50 60 62 54" stroke="#c86bff" strokeWidth="3" fill="none" strokeLinecap="round" />
-
-                <rect x="12" y="34" width="8" height="14" rx="4" fill="url(#botHead)" />
-                <rect x="80" y="34" width="8" height="14" rx="4" fill="url(#botHead)" />
-
-                <rect x="28" y="68" width="44" height="24" rx="10" fill="#0a1330" stroke="url(#botHead)" strokeWidth="3" />
-                <circle cx="50" cy="80" r="4" fill="#4ce0ff" />
-              </svg>
-            </div>
+                  <line
+                    x1="50"
+                    y1="8"
+                    x2="50"
+                    y2="18"
+                    stroke="url(#botHead)"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+                  <circle cx="50" cy="6" r="4" fill="#3ad4ff" />
+                  <rect
+                    x="20"
+                    y="18"
+                    width="60"
+                    height="46"
+                    rx="16"
+                    fill="#0a1330"
+                    stroke="url(#botHead)"
+                    strokeWidth="3"
+                  />
+                  <rect
+                    x="30"
+                    y="30"
+                    width="16"
+                    height="18"
+                    rx="8"
+                    fill="#0a1330"
+                    stroke="#4ce0ff"
+                    strokeWidth="2.5"
+                  />
+                  <circle cx="38" cy="39" r="3.5" fill="#4ce0ff" />
+                  <rect
+                    x="54"
+                    y="30"
+                    width="16"
+                    height="18"
+                    rx="8"
+                    fill="#0a1330"
+                    stroke="#4ce0ff"
+                    strokeWidth="2.5"
+                  />
+                  <circle cx="62" cy="39" r="3.5" fill="#4ce0ff" />
+                  <path
+                    d="M38 54 Q50 60 62 54"
+                    stroke="#c86bff"
+                    strokeWidth="3"
+                    fill="none"
+                    strokeLinecap="round"
+                  />
+                  <rect
+                    x="12"
+                    y="34"
+                    width="8"
+                    height="14"
+                    rx="4"
+                    fill="url(#botHead)"
+                  />
+                  <rect
+                    x="80"
+                    y="34"
+                    width="8"
+                    height="14"
+                    rx="4"
+                    fill="url(#botHead)"
+                  />
+                  <rect
+                    x="28"
+                    y="68"
+                    width="44"
+                    height="24"
+                    rx="10"
+                    fill="#0a1330"
+                    stroke="url(#botHead)"
+                    strokeWidth="3"
+                  />
+                  <circle cx="50" cy="80" r="4" fill="#4ce0ff" />
+                </svg>
+              </div>
 
               <p>
                 Our AI Mentor is here to guide you through every step of your
@@ -279,10 +994,7 @@ export default function App() {
               </p>
             </div>
 
-            <button
-              className="help-button"
-              onClick={() => setAiOpen(true)}
-            >
+            <button className="help-button" onClick={() => setAiOpen(true)}>
               Get AI Assistance <span>→</span>
             </button>
           </div>
@@ -308,6 +1020,8 @@ export default function App() {
             <h1>
               {currentPage === "dashboard"
                 ? "Student Dashboard"
+                : currentPage === "progress"
+                ? "Progress Tracking"
                 : "Academic Project Onboarding"}
             </h1>
 
@@ -322,337 +1036,240 @@ export default function App() {
               <span></span>
               Session Active
             </div>
-
-            <button className="notification">
-              🔔
-              <i></i>
-            </button>
-
+            <button className="notification">🔔<i></i></button>
             <div className="avatar">ST</div>
           </div>
         </header>
 
-        {currentPage === "dashboard" && (
-          <section className="glass-card">
-            <div className="card-heading">
-              <div className="section-icon">▦</div>
+        {(currentPage === "profile" || currentPage === "project") && (
+          <div className="onboarding-steps">
+            <div className={`onboarding-step ${currentPage === "profile" ? "active" : "done"}`}>
+              <div className="onboarding-step-icon">1</div>
+              <div className="onboarding-step-title">Profile</div>
+              <div className="onboarding-step-subtitle">Tell us about you</div>
+            </div>
 
+            <div className={`onboarding-step-line ${currentPage === "project" ? "filled" : ""}`}></div>
+
+            <div className={`onboarding-step ${currentPage === "project" ? "active" : ""}`}>
+              <div className="onboarding-step-icon">2</div>
+              <div className="onboarding-step-title">Project</div>
+              <div className="onboarding-step-subtitle">Share your idea</div>
+            </div>
+
+            <div className="onboarding-step-line"></div>
+
+            <div className="onboarding-step">
+              <div className="onboarding-step-icon">✓</div>
+              <div className="onboarding-step-title">Complete</div>
+              <div className="onboarding-step-subtitle">Review &amp; finish</div>
+            </div>
+          </div>
+        )}
+
+        {/* --------------------------------------------------
+            STUDENT PROFILE
+        -------------------------------------------------- */}
+        {currentPage === "profile" && (
+          <section className="glass-card profile-card-large">
+            <div className="card-heading">
+              <div className="section-icon">♙</div>
               <div>
-                <div className="section-number">DASHBOARD</div>
-                <h2>Welcome, {formData.name || "Student"} 👋</h2>
-                <p>Your project onboarding has been completed successfully.</p>
+                <div className="section-number">SECTION 01</div>
+                <h2>Build your academic profile</h2>
+                <p>
+                  Provide your academic background and technical skills so we
+                  can offer relevant project guidance.
+                </p>
               </div>
             </div>
 
             <div className="form-grid">
               <div className="input-group">
-                <label>Project Title</label>
+                <label>Full Name *</label>
                 <div className="input-wrap">
-                  <span>{projectData.title || "No project submitted"}</span>
+                  <input
+                    type="text"
+                    name="name"
+                    value={formData.name}
+                    onChange={handleProfileChange}
+                    placeholder="Enter your name"
+                  />
                 </div>
               </div>
 
               <div className="input-group">
-                <label>Project Category</label>
+                <label>Department *</label>
                 <div className="input-wrap">
-                  <span>{projectData.category || "Not selected"}</span>
+                  <input
+                    type="text"
+                    name="department"
+                    value={formData.department}
+                    onChange={handleProfileChange}
+                    placeholder="e.g. CSE / CSM"
+                  />
                 </div>
               </div>
 
               <div className="input-group full">
-                <label>Selected Skills</label>
+                <label>Academic Year *</label>
                 <div className="input-wrap">
-                  <span>
-                    {selectedSkills.length > 0
-                      ? selectedSkills.join(", ")
-                      : "No skills selected"}
-                  </span>
+                  <select
+                    name="year"
+                    value={formData.year}
+                    onChange={handleProfileChange}
+                  >
+                    <option value="">Select year</option>
+                    <option value="1st Year">1st Year</option>
+                    <option value="2nd Year">2nd Year</option>
+                    <option value="3rd Year">3rd Year</option>
+                    <option value="4th Year">4th Year</option>
+                  </select>
                 </div>
               </div>
 
               <div className="input-group full">
-                <label>Project Status</label>
+                <label>Technical Skills</label>
+                <p className="field-hint">Select the technologies you are familiar with</p>
+                <div className="skills-grid">
+                  {skills.map((skill) => (
+                    <button
+                      type="button"
+                      key={skill.id}
+                      className={`skill-card ${
+                        selectedSkills.includes(skill.id) ? "selected" : ""
+                      }`}
+                      onClick={() => toggleSkill(skill.id)}
+                    >
+                      <span className="skill-icon">{skill.icon}</span>
+                      <span>{skill.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="input-group full">
+                <label>Academic Interests</label>
                 <div className="input-wrap">
-                  <span>🎉 Onboarding Completed</span>
+                  <input
+                    type="text"
+                    name="interests"
+                    value={formData.interests}
+                    onChange={handleProfileChange}
+                    placeholder="AI, Web Development, etc."
+                  />
                 </div>
               </div>
             </div>
 
             <div className="form-footer">
-              <span>Your project journey is ready to begin!</span>
-
+              <span></span>
               <button
+                type="button"
                 className="primary-button"
-                onClick={() => setCurrentPage("profile")}
+                onClick={handleContinue}
               >
-                Edit Profile
+                Continue to Project
                 <span className="button-arrow">→</span>
               </button>
             </div>
           </section>
         )}
 
-        {currentPage === "profile" && (
-          <>
-            <section className="progress-panel">
-              <div className="progress-item">
-                <div className="step-shape">1</div>
-                <strong>Profile</strong>
-                <span>Tell us about you</span>
-              </div>
-
-              <div className="progress-line filled"></div>
-
-              <div className="progress-item">
-                <div className="step-shape">2</div>
-                <strong>Project</strong>
-                <span>Share your idea</span>
-              </div>
-
-              <div className="progress-line"></div>
-
-              <div className="progress-item">
-                <div className="step-shape">✓</div>
-                <strong>Complete</strong>
-                <span>Review & finish</span>
-              </div>
-            </section>
-
-            <section className="glass-card">
-              <div className="card-heading">
-                <div className="section-icon">♙</div>
-
-                <div>
-                  <div className="section-number">SECTION 01</div>
-                  <h2>Build your academic profile</h2>
-                  <p>
-                    Provide your academic background and technical skills so we
-                    can offer relevant project guidance.
-                  </p>
-                </div>
-              </div>
-
-              <div className="form-grid">
-                <div className="input-group">
-                  <label>
-                    Full Name <b>*</b>
-                  </label>
-
-                  <div className="input-wrap">
-                    <span className="field-icon">👤</span>
-                    <input
-                      type="text"
-                      name="name"
-                      value={formData.name}
-                      onChange={handleProfileChange}
-                      placeholder="Enter your full name"
-                    />
-                  </div>
-                </div>
-
-                <div className="input-group">
-                  <label>
-                    Department <b>*</b>
-                  </label>
-
-                  <div className="input-wrap">
-                    <span className="field-icon">🏛</span>
-                    <input
-                      type="text"
-                      name="department"
-                      value={formData.department}
-                      onChange={handleProfileChange}
-                      placeholder="Example: Computer Science"
-                    />
-                  </div>
-                </div>
-
-                <div className="input-group full">
-                  <label>
-                    Academic Year <b>*</b>
-                  </label>
-
-                  <div className="select-wrap">
-                    <select
-                      name="year"
-                      value={formData.year}
-                      onChange={handleProfileChange}
-                    >
-                      <option value="">Select your academic year</option>
-                      <option value="1st Year">1st Year</option>
-                      <option value="2nd Year">2nd Year</option>
-                      <option value="3rd Year">3rd Year</option>
-                      <option value="4th Year">4th Year</option>
-                      <option value="Postgraduate">Postgraduate</option>
-                    </select>
-                    <span className="select-arrow">▾</span>
-                  </div>
-                </div>
-
-                <div className="input-group full">
-                  <label>Technical Skills</label>
-
-                  <p className="field-description">
-                    Select the technologies you are familiar with
-                  </p>
-
-                  <div className="skills-grid">
-                    {skills.map((skill) => {
-                      const selected = selectedSkills.includes(skill.id);
-
-                      return (
-                        <button
-                          type="button"
-                          key={skill.id}
-                          className={`skill-card ${
-                            selected ? "selected" : ""
-                          }`}
-                          onClick={() => toggleSkill(skill.id)}
-                        >
-                          <span className="skill-icon">{skill.icon}</span>
-                          <span>{skill.name}</span>
-
-                          {selected && (
-                            <span className="skill-check">✓</span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="input-group full academic-interests">
-                  <label>Academic Interests</label>
-
-                  <textarea
-                    name="interests"
-                    value={formData.interests}
-                    onChange={handleProfileChange}
-                    placeholder="Example: Artificial Intelligence, Web Development, Data Science..."
-                  ></textarea>
-                </div>
-              </div>
-
-              <div className="form-footer">
-                <span>
-                  <b>*</b> Required fields
-                </span>
-
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={handleContinue}
-                >
-                  Continue to Project
-                  <span className="button-arrow">→</span>
-                </button>
-              </div>
-            </section>
-          </>
-        )}
-
+        {/* --------------------------------------------------
+            PROJECT SUBMISSION
+        -------------------------------------------------- */}
         {currentPage === "project" && (
           <section className="glass-card">
             <div className="card-heading">
               <div className="section-icon">▤</div>
-
               <div>
                 <div className="section-number">SECTION 02</div>
                 <h2>Submit your project idea</h2>
                 <p>
-                  Tell us about your project idea so our AI Mentor can provide
-                  personalized guidance.
+                  Tell us about your project idea so our AI Mentor can
+                  provide personalized guidance.
                 </p>
               </div>
             </div>
 
             <div className="form-grid">
-              <div className="input-group full">
-                <label>
-                  Project Title <b>*</b>
-                </label>
-
+              <div className="input-group">
+                <label>Project Title *</label>
                 <div className="input-wrap">
                   <input
                     type="text"
                     name="title"
                     value={projectData.title}
                     onChange={handleProjectChange}
-                    placeholder="Example: AI Based Student Project Recommendation System"
+                    placeholder="e.g. AI Based Student Attendance System"
                   />
                 </div>
               </div>
 
               <div className="input-group">
-                <label>
-                  Project Category <b>*</b>
-                </label>
-
-                <div className="select-wrap">
+                <label>Project Category *</label>
+                <div className="input-wrap">
                   <select
                     name="category"
                     value={projectData.category}
                     onChange={handleProjectChange}
                   >
-                    <option value="">Select project category</option>
-                    <option value="Artificial Intelligence">
-                      Artificial Intelligence
-                    </option>
+                    <option value="">Select category</option>
+                    <option value="Artificial Intelligence">Artificial Intelligence</option>
+                    <option value="Machine Learning">Machine Learning</option>
                     <option value="Web Development">Web Development</option>
-                    <option value="Machine Learning">
-                      Machine Learning
-                    </option>
                     <option value="Data Science">Data Science</option>
-                    <option value="Full Stack Development">
-                      Full Stack Development
-                    </option>
+                    <option value="IoT">IoT</option>
+                    <option value="Other">Other</option>
                   </select>
-                  <span className="select-arrow">▾</span>
                 </div>
               </div>
 
-              <div className="input-group">
+              <div className="input-group selected-technologies-display">
                 <label>Selected Technologies</label>
-
-                <div className="input-wrap">
-                  <span>
-                    {selectedSkills.length > 0
-                      ? selectedSkills.join(", ")
-                      : "No skills selected"}
-                  </span>
+                <div className="tech-tags">
+                  {selectedSkills.length > 0
+                    ? selectedSkills.join(", ")
+                    : "No skills selected yet"}
                 </div>
               </div>
 
               <div className="input-group full">
-                <label>
-                  Project Description <b>*</b>
-                </label>
-
-                <textarea
-                  name="description"
-                  value={projectData.description}
-                  onChange={handleProjectChange}
-                  placeholder="Explain your project idea, the problem you want to solve, and how your application will work..."
-                ></textarea>
+                <label>Project Description *</label>
+                <div className="input-wrap">
+                  <textarea
+                    name="description"
+                    value={projectData.description}
+                    onChange={handleProjectChange}
+                    placeholder="Explain what your project will do..."
+                    rows="5"
+                  ></textarea>
+                </div>
               </div>
 
               <div className="input-group full">
                 <label>Project Objective</label>
-
-                <textarea
-                  name="objective"
-                  value={projectData.objective}
-                  onChange={handleProjectChange}
-                  placeholder="What do you want to achieve with this project?"
-                ></textarea>
+                <div className="input-wrap">
+                  <textarea
+                    name="objective"
+                    value={projectData.objective}
+                    onChange={handleProjectChange}
+                    placeholder="What is the main objective of your project?"
+                    rows="4"
+                  ></textarea>
+                </div>
               </div>
             </div>
 
+            {technologyError && (
+              <div className="error-message">
+                ⚠️ {technologyError}
+              </div>
+            )}
+
             <div className="form-footer">
-              <button
-                type="button"
-                onClick={() => setCurrentPage("profile")}
-              >
+              <button type="button" onClick={() => setCurrentPage("profile")}>
                 ← Back to Profile
               </button>
 
@@ -669,11 +1286,13 @@ export default function App() {
           </section>
         )}
 
+        {/* --------------------------------------------------
+            REVIEW & COMPLETE
+        -------------------------------------------------- */}
         {currentPage === "review" && (
           <section className="glass-card">
             <div className="card-heading">
               <div className="section-icon">✓</div>
-
               <div>
                 <div className="section-number">SECTION 03</div>
                 <h2>Review & Complete</h2>
@@ -716,24 +1335,190 @@ export default function App() {
               </div>
             )}
             <div className="form-footer">
-              <button
-                type="button"
-                onClick={() => setCurrentPage("project")}
-              >
-                ← Back to Project
+              <button type="button" onClick={() => setCurrentPage("progress")}>
+                ← Back to Progress Tracking
               </button>
-
               <button
                 type="button"
                 className="primary-button"
-                onClick={handleCompleteOnboarding}
+                onClick={() => setCurrentPage("dashboard")}
               >
-                Complete Onboarding ✓
+                Go to Dashboard
+                <span className="button-arrow">→</span>
               </button>
             </div>
           </section>
         )}
 
+        {/* --------------------------------------------------
+            TECHNOLOGY RECOMMENDATION
+        -------------------------------------------------- */}
+        {currentPage === "technology" && (
+          <section className="glass-card">
+            <div className="card-heading">
+              <div className="section-icon">⚙</div>
+              <div>
+                <div className="section-number">SECTION 04</div>
+                <h2>Technology Recommendation</h2>
+                <p>Recommended technologies generated by the Technology Stack Recommendation Agent.</p>
+              </div>
+            </div>
+
+            {technologyLoading && (
+              <div className="technology-result-section">
+                <div className="technology-result-heading">
+                  <span>🛠️</span>
+                  <div>
+                    <h3>Analyzing your project...</h3>
+                    <p>Please wait while the Technology Agent generates your recommendation.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!technologyLoading && technologyError && (
+              <>
+                <div className="error-message">⚠️ {technologyError}</div>
+                <div className="form-footer">
+                  <button type="button" onClick={() => setCurrentPage("review")}>
+                    ← Back to Review
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={handleViewRecommendation}
+                  >
+                    Try Again
+                    <span className="button-arrow">→</span>
+                  </button>
+                </div>
+              </>
+            )}
+
+            {!technologyLoading && !technologyError && technologyResult && (
+              <>
+                <div className="review-details">
+                  <p><strong>Project Title :</strong> {projectData.title}</p>
+                  <p><strong>Project Category :</strong> {projectData.category}</p>
+                </div>
+
+                <div className="technology-result-section">
+                  <div className="technology-result-heading">
+                    <span>🛠️</span>
+                    <div>
+                      <h3>Recommended Technology Stack</h3>
+                      <p>Generated by the Technology Stack Recommendation Agent.</p>
+                    </div>
+                  </div>
+
+                  <div className="technology-result">
+                    {renderTechStackCards(technologyResult)}
+                  </div>
+                </div>
+
+                <div className="form-footer">
+                  <button type="button" onClick={() => setCurrentPage("review")}>
+                    ← Back to Review
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={handleCompleteOnboarding}
+                  >
+                    Complete Onboarding ✓
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
+        {/* --------------------------------------------------
+            DASHBOARD
+        -------------------------------------------------- */}
+        {currentPage === "dashboard" && (
+          <section className="glass-card">
+            <div className="card-heading">
+              <div className="section-icon">▦</div>
+              <div>
+                <div className="section-number">DASHBOARD</div>
+                <h2>Welcome, {formData.name || "Student"} 👋</h2>
+                <p>Your project onboarding has been completed successfully.</p>
+              </div>
+            </div>
+
+            <div className="progress-result-box" style={{ marginBottom: "20px" }}>
+              <h3>Latest Progress</h3>
+              {progressHistoryLoading ? (
+                <p>Loading saved progress...</p>
+              ) : savedProgress.length > 0 ? (
+                (() => {
+                  const latest = savedProgress[savedProgress.length - 1];
+                  return (
+                    <>
+                      <p><strong>{latest.week}</strong> — {latest.current_task}</p>
+                      <div className="backend-progress-track">
+                        <div className="backend-progress-fill" style={{ width: `${latest.progress_percentage || 0}%` }}></div>
+                      </div>
+                      <div className="progress-percent">{latest.progress_percentage || 0}%</div>
+                      <p><strong>Status:</strong> {latest.status}</p>
+                    </>
+                  );
+                })()
+              ) : (
+                <p>No weekly progress submitted yet.</p>
+              )}
+              <button type="button" className="primary-button" onClick={() => { loadSavedProgress(); setCurrentPage("progress"); }}>
+                Update Weekly Progress →
+              </button>
+            </div>
+
+            <div className="form-grid">
+              <div className="input-group">
+                <label>Project Title</label>
+                <div className="input-wrap">
+                  <span>{projectData.title || "No project submitted"}</span>
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label>Project Category</label>
+                <div className="input-wrap">
+                  <span>{projectData.category || "Not selected"}</span>
+                </div>
+              </div>
+
+              <div className="input-group full">
+                <label>Selected Skills</label>
+                <div className="input-wrap">
+                  <span>
+                    {selectedSkills.length > 0
+                      ? selectedSkills.join(", ")
+                      : "No skills selected"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="input-group full">
+                <label>Project Status</label>
+                <div className="input-wrap">
+                  <span>🎉 Onboarding Completed</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="form-footer">
+              <button type="button" onClick={() => setCurrentPage("profile")}>
+                ← Back to Profile
+              </button>
+
+            </div>
+          </section>
+        )}
+
+        {/* --------------------------------------------------
+            AI MENTOR MODAL
+        -------------------------------------------------- */}
         {aiOpen && (
           <div className="ai-modal-overlay">
             <div className="ai-modal">
@@ -746,38 +1531,48 @@ export default function App() {
               </button>
 
               <div className="ai-modal-icon">🤖</div>
-
               <h2>AI Mentor</h2>
               <p>
-                Hi! I&apos;m your AI Project Mentor. Choose an option below
-                to get guidance for your academic project.
+                Hi! I&apos;m your AI Project Mentor. Choose an option below to
+                get guidance for your academic project.
               </p>
 
               <div className="ai-options">
                 <button
                   type="button"
-                  onClick={() => alert("AI Mentor: Start by defining your project problem, target users, and expected outcome.")}
+                  onClick={() =>
+                    alert(
+                      "AI Mentor: Start by defining your project problem, target users, and expected outcome."
+                    )
+                  }
                 >
                   💡 Suggest Project Ideas
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => alert("AI Mentor: Break your project into milestones such as planning, design, development, testing, and deployment.")}
+                  onClick={() =>
+                    alert(
+                      "AI Mentor: Break your project into milestones such as planning, design, development, testing, and deployment."
+                    )
+                  }
                 >
                   📋 Create Project Plan
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => alert("AI Mentor: Choose technologies based on your project requirements, your skills, and deployment needs.")}
+                  onClick={() => setCurrentPage("project")}
                 >
                   🛠️ Recommend Technologies
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => alert("AI Mentor: Track your project by marking each milestone as Not Started, In Progress, or Completed.")}
+                  onClick={() => {
+                    setAiOpen(false);
+                    setCurrentPage("progress");
+                  }}
                 >
                   🎯 Track Project Progress
                 </button>
@@ -785,8 +1580,8 @@ export default function App() {
             </div>
           </div>
         )}
-
       </main>
     </div>
+    </>
   );
 }
